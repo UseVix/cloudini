@@ -1,39 +1,26 @@
 
-if(NOT TARGET mcap)
-    CPMAddPackage(
-        NAME mcap
-        GITHUB_REPOSITORY foxglove/mcap
-        GIT_TAG releases/cpp/v1.3.1
-        DOWNLOAD_ONLY YES
-    )
-    # mcap has no CMake support, so we create our own target
-    add_library(mcap INTERFACE)
-    target_include_directories(mcap INTERFACE "${mcap_SOURCE_DIR}/cpp/mcap/include")
-    ## create alias mcap::mcap
-    add_library(mcap::mcap ALIAS mcap)
-endif()
-
 
 add_library(mcap_converter src/mcap_converter.cpp)
 target_include_directories(mcap_converter
   PUBLIC
    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-   $<BUILD_INTERFACE:${LZ4_INCLUDE_DIR}>
-   $<BUILD_INTERFACE:${ZSTD_INCLUDE_DIR}>
 )
 
 target_link_libraries(mcap_converter
   PUBLIC
    cloudini_lib
   PRIVATE
-   ${LZ4_LIBRARY}
-   ${ZSTD_LIBRARY}
+   LZ4::lz4_static
+   zstd::libzstd_static
    mcap::mcap
 )
 
 ########################################################
 
-CPMAddPackage("gh:jarro2783/cxxopts@3.3.1")
+find_package(cxxopts QUIET)
+if(NOT TARGET cxxopts::cxxopts)
+  CPMAddPackage("gh:jarro2783/cxxopts@3.3.1")
+endif()
 
 add_executable(cloudini_rosbag_converter
  src/cloudini_rosbag_converter.cpp)
@@ -41,7 +28,7 @@ add_executable(cloudini_rosbag_converter
 target_link_libraries(cloudini_rosbag_converter
   PRIVATE
    mcap_converter
-   cxxopts
+   cxxopts::cxxopts
 )
 
 add_executable(mcap_cutter
@@ -49,11 +36,35 @@ add_executable(mcap_cutter
 
 target_link_libraries(mcap_cutter
   PRIVATE
-   cloudini_lib
-   ${LZ4_LIBRARY}
-   ${ZSTD_LIBRARY}
-   mcap::mcap
-   cxxopts
+    cloudini_lib
+    LZ4::lz4_static
+    zstd::libzstd_static
+    mcap::mcap
+    cxxopts::cxxopts
+)
+
+add_executable(mcap_header_inspector
+ src/mcap_header_inspector.cpp)
+
+target_link_libraries(mcap_header_inspector
+  PRIVATE
+    cloudini_lib
+    LZ4::lz4_static
+    zstd::libzstd_static
+    mcap::mcap
+    cxxopts::cxxopts
+)
+
+add_executable(mcap_codec_benchmark
+ src/mcap_codec_benchmark.cpp)
+
+target_link_libraries(mcap_codec_benchmark
+  PRIVATE
+    cloudini_lib
+    LZ4::lz4_static
+    zstd::libzstd_static
+    mcap::mcap
+    cxxopts::cxxopts
 )
 
 install(TARGETS cloudini_rosbag_converter
@@ -61,6 +72,40 @@ install(TARGETS cloudini_rosbag_converter
 
 install(FILES cloudini_converter.desktop
         DESTINATION share/applications)
+
+########################################################
+# PCD to Cloudini converter tool
+
+find_package(PCL QUIET COMPONENTS common io)
+
+if(PCL_FOUND)
+  add_executable(pcd_to_cloudini_converter
+    src/pcd_to_cloudini_converter.cpp)
+
+  target_link_libraries(pcd_to_cloudini_converter
+    PRIVATE
+      cloudini_lib
+      cxxopts
+      ${PCL_LIBRARIES}
+  )
+
+  target_include_directories(pcd_to_cloudini_converter
+    PRIVATE
+      ${PCL_INCLUDE_DIRS}
+  )
+
+  target_compile_definitions(pcd_to_cloudini_converter
+    PRIVATE
+      ${PCL_DEFINITIONS}
+  )
+
+  install(TARGETS pcd_to_cloudini_converter
+          RUNTIME DESTINATION bin)
+
+  message(STATUS "PCL found - building pcd_to_cloudini_converter")
+else()
+  message(STATUS "PCL not found - skipping pcd_to_cloudini_converter")
+endif()
 
 
 #find_package(Qt6 COMPONENTS Core Gui Widgets REQUIRED)

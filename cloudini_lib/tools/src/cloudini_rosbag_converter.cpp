@@ -14,29 +14,90 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <vector>
 
 #include "cloudini_lib/cloudini.hpp"
 #include "cxxopts.hpp"
 #include "mcap_converter.hpp"
 
+namespace {
+
+void replaceAll(std::string& str, const std::string& from, const std::string& to) {
+  size_t pos = 0;
+  while ((pos = str.find(from, pos)) != std::string::npos) {
+    str.replace(pos, from.size(), to);
+    pos += to.size();
+  }
+}
+
+void generateMetadataYaml(
+    const std::filesystem::path& input_metadata, const std::filesystem::path& output_dir,
+    const std::string& new_mcap_filename, bool encoding) {
+  std::ifstream in(input_metadata);
+  std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+  // Replace topic types
+  const std::string old_type =
+      encoding ? "sensor_msgs/msg/PointCloud2" : "point_cloud_interfaces/msg/CompressedPointCloud2";
+  const std::string new_type =
+      encoding ? "point_cloud_interfaces/msg/CompressedPointCloud2" : "sensor_msgs/msg/PointCloud2";
+
+  replaceAll(content, "type: " + old_type, "type: " + new_type);
+
+  // Replace .mcap filename references (in relative_file_paths and files sections)
+  // Extract the original mcap filename from the "relative_file_paths:" section
+  size_t rfp_pos = content.find("relative_file_paths:");
+  if (rfp_pos != std::string::npos) {
+    size_t dash_pos = content.find("- ", rfp_pos);
+    if (dash_pos != std::string::npos) {
+      size_t name_start = dash_pos + 2;
+      size_t name_end = content.find('\n', name_start);
+      std::string old_mcap_name = content.substr(name_start, name_end - name_start);
+      // Trim trailing whitespace/CR
+      while (!old_mcap_name.empty() && (old_mcap_name.back() == ' ' || old_mcap_name.back() == '\r')) {
+        old_mcap_name.pop_back();
+      }
+      if (!old_mcap_name.empty()) {
+        replaceAll(content, old_mcap_name, new_mcap_filename);
+      }
+    }
+  }
+
+  std::filesystem::path output_metadata = output_dir / "metadata.yaml";
+  std::ofstream out(output_metadata);
+  out << content;
+  std::cout << "Metadata file saved as: " << output_metadata << std::endl;
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
   cxxopts::Options options("cloudini_rosbag_converter", "Encode/Decode PointCloud2 messages in MCAP files");
 
-  options.add_options()                                                 //
-      ("h,help", "Print usage")                                         //
-      ("y,yes", "Auto-confirm overwrite of files")                      //
-      ("f,filename", "Input file name", cxxopts::value<std::string>())  //
-      ("o,output", "Output file name", cxxopts::value<std::string>())   //
-      ("r,resolution", "Resolution applied to floating point fields",   //
-       cxxopts::value<double>()->default_value("0.001"))                //
+  options.add_options()                                                                          //
+      ("h,help", "Print usage")                                                                  //
+      ("y,yes", "Auto-confirm overwrite of files")                                               //
+      ("f,filename", "Input .mcap file or ROS2 bag directory", cxxopts::value<std::string>())    //
+      ("o,output", "Output file name (default: auto-generated)", cxxopts::value<std::string>())  //
+      ("r,resolution", "Resolution applied to floating point fields",                            //
+       cxxopts::value<double>()->default_value("0.001"))                                         //
       ("profile", "Apply a profile to encoding. See '--help' for details. It can be a path to a file or a string",
        cxxopts::value<std::string>())                                 //
       ("c,compress", "Convert PointCloud2 to CompressedPointCloud2")  //
       ("d,decode", "Convert CompressedPointCloud2 to PointCloud2")    //
-      ("m,method", "Compression method to use when writing data back to mcap ('lz4' or 'zstd', 'none')",
+      ("s,stats", "Print compression statistics")                     //
+      ("viz",
+       "Visualization-oriented lossy preprocessing (compression only). Bundles three "
+       "operations applied per message before encoding: drop NaN points, voxel-dedupe "
+       "at the xyz resolution (first occurrence wins; order preserved), and quantize "
+       "FLOAT64 fields without a resolution to 1us (typically per-point timestamps). "
+       "Roughly halves output size on real LIDAR with stage-2 ZSTD. Lossy on NaN "
+       "positions, mm-coincident duplicates, and sub-microsecond FLOAT64 precision.")  //
+      ("m,method", "Compression method to use when writing data back to mcap ('zstd', 'none')",
        cxxopts::value<std::string>()->default_value("zstd"));
 
   auto parse_result = options.parse(argc, argv);
@@ -44,7 +105,12 @@ int main(int argc, char** argv) {
   if (parse_result.count("help")) {
     std::cout << options.help() << std::endl;
 
-    std::cout << "During encoding, you can specify a custom profile, where you specify the resolution of each fields "
+    std::cout << "Input (-f) can be a .mcap file or a ROS2 bag directory.\n"
+              << "When a bag directory is given (or a .mcap with a sibling metadata.yaml),\n"
+              << "a transformed metadata.yaml is generated alongside the output .mcap.\n"
+              << "Default output is placed in a new sibling directory to avoid overwriting\n"
+              << "the original bag (e.g. my_bag/ -> my_bag_encoded/).\n"
+              << "\nDuring encoding, you can specify a custom profile, where you specify the resolution of each fields "
                  "or even remove entire fields. Example:\n\n"
               << "  --profile \"xyz:0.001; intensity:0.1; timestamp:remove\"\n"
               << "\nThis means:\n"
@@ -73,6 +139,7 @@ int main(int argc, char** argv) {
   const double resolution = parse_result["resolution"].as<double>();
   const bool encode = parse_result.count("compress");
   const bool decode = parse_result.count("decode");
+  const bool viz_lossy = parse_result.count("viz") > 0;
 
   if (encode && decode) {
     std::cerr << "Error: Cannot specify both --compress and --decode options." << std::endl;
@@ -82,21 +149,94 @@ int main(int argc, char** argv) {
     std::cerr << "Error: Must specify either --compress or --decode option." << std::endl;
     return 1;
   }
-
-  // only mcap files are supported
-  if (input_file.extension() != ".mcap") {
-    std::cerr << "Error: Input file must be a .mcap file. String was: " << input_file << std::endl;
+  if (viz_lossy && !encode) {
+    std::cerr << "Error: --viz can only be used with --compress." << std::endl;
     return 1;
   }
 
-  std::string output_filename = input_file.stem().string() + (encode ? "_encoded.mcap" : "_decoded.mcap");
+  // Resolve input: accept a bag directory or a bare .mcap file
+  std::filesystem::path mcap_file;
+  std::filesystem::path input_metadata;  // empty if no metadata.yaml found
+
+  if (std::filesystem::is_directory(input_file)) {
+    // Find metadata.yaml
+    auto meta = input_file / "metadata.yaml";
+    if (!std::filesystem::exists(meta)) {
+      std::cerr << "Error: Directory does not contain metadata.yaml: " << input_file << std::endl;
+      return 1;
+    }
+    input_metadata = meta;
+
+    // Find .mcap files
+    std::vector<std::filesystem::path> mcap_files;
+    for (const auto& entry : std::filesystem::directory_iterator(input_file)) {
+      if (entry.path().extension() == ".mcap") {
+        mcap_files.push_back(entry.path());
+      }
+    }
+    if (mcap_files.empty()) {
+      std::cerr << "Error: Directory does not contain any .mcap file: " << input_file << std::endl;
+      return 1;
+    }
+    if (mcap_files.size() > 1) {
+      std::cerr << "Error: Directory contains multiple .mcap files. Please specify the file directly." << std::endl;
+      return 1;
+    }
+    mcap_file = mcap_files[0];
+  } else if (input_file.extension() == ".mcap") {
+    mcap_file = input_file;
+    // Check for sibling metadata.yaml
+    auto meta = input_file.parent_path() / "metadata.yaml";
+    if (std::filesystem::exists(meta)) {
+      input_metadata = meta;
+    }
+  } else {
+    std::cerr << "Error: Input must be a .mcap file or a bag directory: " << input_file << std::endl;
+    return 1;
+  }
+
+  // Determine output filename
+  std::string output_filename;
   if (parse_result.count("output")) {
     output_filename = parse_result["output"].as<std::string>();
+  } else if (!input_metadata.empty()) {
+    // When input has metadata.yaml, default output goes to a new sibling directory
+    auto input_dir = std::filesystem::canonical(input_metadata.parent_path());
+    auto suffix = encode ? "_encoded" : "_decoded";
+    auto output_dir = input_dir.parent_path() / (input_dir.filename().string() + suffix);
+    output_filename = (output_dir / (mcap_file.stem().string() + suffix + ".mcap")).string();
+  } else {
+    output_filename = mcap_file.stem().string() + (encode ? "_encoded.mcap" : "_decoded.mcap");
   }
 
   // if filename doesn't have .mcap extension, add it
   if (std::filesystem::path(output_filename).extension() != ".mcap") {
     output_filename += ".mcap";
+  }
+
+  // Safety check: prevent overwriting original metadata.yaml
+  if (!input_metadata.empty()) {
+    auto output_dir = std::filesystem::path(output_filename).parent_path();
+    if (output_dir.empty()) {
+      output_dir = std::filesystem::current_path();
+    }
+    auto input_dir = std::filesystem::canonical(input_metadata.parent_path());
+    // Canonicalize output_dir only if it already exists
+    if (std::filesystem::exists(output_dir)) {
+      output_dir = std::filesystem::canonical(output_dir);
+    }
+    if (output_dir == input_dir) {
+      std::cerr << "Error: Output would be in the same directory as the input bag.\n"
+                << "This would overwrite the original metadata.yaml.\n"
+                << "Please specify an output in a different directory with -o.\n";
+      return 1;
+    }
+  }
+
+  // Create output directory if it doesn't exist
+  auto output_parent = std::filesystem::path(output_filename).parent_path();
+  if (!output_parent.empty() && !std::filesystem::exists(output_parent)) {
+    std::filesystem::create_directories(output_parent);
   }
 
   if (decode && parse_result.count("profile")) {
@@ -115,7 +255,7 @@ int main(int argc, char** argv) {
       return 0;
     }
   }
-  std::cout << "Input file: " << input_file << std::endl;
+  std::cout << "----------------------\nInput file: " << mcap_file << std::endl;
 
   // Parse the mcap writer compression method
   Cloudini::CompressionOption mcap_writer_compression;
@@ -123,13 +263,13 @@ int main(int argc, char** argv) {
   // clang-format off
   const auto compression_options_map = std::unordered_map<std::string, Cloudini::CompressionOption>{
       {"none", Cloudini::CompressionOption::NONE},
-      {"lz4", Cloudini::CompressionOption::LZ4},
       {"zstd", Cloudini::CompressionOption::ZSTD}};
   // clang-format on
 
   std::string compression_method = parse_result["method"].as<std::string>();
   if (!compression_options_map.contains(compression_method)) {
     std::cerr << "Error: Invalid compression method: " << compression_method << std::endl;
+    std::cerr << "The application only supports 'zstd' and 'none'" << std::endl;
     return 1;
   }
   mcap_writer_compression = compression_options_map.at(compression_method);
@@ -140,7 +280,7 @@ int main(int argc, char** argv) {
 
   try {
     McapConverter converter;
-    auto topics = converter.open(input_file);
+    auto topics = converter.open(mcap_file);
     std::cout << "\nTopics containing Point Clouds found in the MCAP file:" << std::endl;
     for (const auto& [topic, schema] : topics) {
       std::cout << "Topic: " << topic << ", Schema: " << schema << std::endl;
@@ -164,7 +304,7 @@ int main(int argc, char** argv) {
       return 1;
     }
 
-    std::cout << "\n started processing MCAP file: " << input_file << std::endl;
+    std::cout << "\n started processing MCAP file: " << mcap_file << std::endl;
 
     if (encode) {
       if (parse_result.count("profile")) {
@@ -184,12 +324,31 @@ int main(int argc, char** argv) {
           std::cout << "  " << field << ": " << resolution << std::endl;
         }
       }
-      converter.encodePointClouds(output_filename, resolution, mcap_writer_compression);
+      if (viz_lossy) {
+        std::cout << "\nViz-lossy preprocessing: drop NaN, voxel-dedupe at "
+                  << resolution << " m, quantize FLOAT64 to 1us\n";
+      }
+      converter.encodePointClouds(output_filename, resolution, mcap_writer_compression, viz_lossy);
     }
     if (decode) {
       converter.decodePointClouds(output_filename, mcap_writer_compression);
     }
     std::cout << "\nFile saved as: " << output_filename << std::endl;
+
+    // Generate transformed metadata.yaml if input had one
+    if (!input_metadata.empty()) {
+      auto output_path = std::filesystem::path(output_filename);
+      auto output_dir = output_path.parent_path();
+      if (output_dir.empty()) {
+        output_dir = std::filesystem::current_path();
+      }
+      generateMetadataYaml(input_metadata, output_dir, output_path.filename().string(), encode);
+    }
+
+    if (parse_result.count("stats")) {
+      std::cout << "\n";
+      converter.printStatistics();
+    }
 
   } catch (const std::exception& e) {
     std::cerr << "Error: " << e.what() << std::endl;

@@ -7,17 +7,29 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    container:
+      image: rostooling/setup-ros-docker:ubuntu-jammy-ros-humble-ros-base-latest
     steps:
-      # Set up ROS
       - uses: ros-tooling/setup-ros@v0.7
         with:
           required-ros-distributions: humble
 
-      # Run ROS CI
       - uses: ros-tooling/action-ros-ci@v0.4
         with:
-          package-name: cloudini_ros
+          package-name: |
+            cloudini_lib
+            cloudini_ros
           target-ros2-distro: humble
+          colcon-defaults: |
+            {
+              "build": {
+                "cmake-args": ["-DFETCHCONTENT_FULLY_DISCONNECTED=ON"]
+              }
+            }

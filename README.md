@@ -1,6 +1,9 @@
+[![Conan Center](https://img.shields.io/conan/v/cloudini)](https://conan.io/center/recipes/cloudini)
 [![Ubuntu](https://github.com/facontidavide/cloudini/actions/workflows/ubuntu-build.yaml/badge.svg)](https://github.com/facontidavide/cloudini/actions/workflows/ubuntu-build.yaml)
 [![ROS2 Humble](https://github.com/facontidavide/cloudini/actions/workflows/ros-humble.yaml/badge.svg)](https://github.com/facontidavide/cloudini/actions/workflows/ros-humble.yaml)
 [![ROS2 Jazzy](https://github.com/facontidavide/cloudini/actions/workflows/ros-jazzy.yaml/badge.svg)](https://github.com/facontidavide/cloudini/actions/workflows/ros-jazzy.yaml)
+[![ROS2 Kilted](https://github.com/facontidavide/cloudini/actions/workflows/ros-kilted.yaml/badge.svg)](https://github.com/facontidavide/cloudini/actions/workflows/ros-kilted.yaml)
+[![ROS2 Rolling](https://github.com/facontidavide/cloudini/actions/workflows/ros-rolling.yaml/badge.svg)](https://github.com/facontidavide/cloudini/actions/workflows/ros-rolling.yaml)
 
 ![Cloudini](logo.png)
 
@@ -29,25 +32,15 @@ they include some "padding" in the message that, in extreme cases, may reach up 
 
 But, in general, you may expect considerably **better compression and faster encoding/decoding**  than ZSTD or LZ4 alone.
 
-These are two random examples using real-world data from LiDARs.
+These are some examples using real-world data from LiDARs.
 
-- **Channels**: XYZ, Intensity, no padding
+Below, you can see the compression ratio (normalized to original pointcloud size)
 
-```
-  [LZ4 only]      ratio: 0.77 time (usec): 2165
-  [ZSTD only]     ratio: 0.68 time (usec): 2967
-  [Cloudini-LZ4]  ratio: 0.56 time (usec): 1254
-  [Cloudini-ZSTD] ratio: 0.51 time (usec): 1576
-```
+![compression_ratio.png](compression_ratio.png)
 
-- **Channels**: XYZ, intensity, ring (int16), timestamp (double), with padding
+Interestingly, Cloudini has a negative overhead, i.e. Cloudini + ZSTD is **faster** than ZSTD alone.
 
-```
-  [LZ4 only]      ratio: 0.31 time (usec): 2866
-  [ZSTD only]     ratio: 0.24 time (usec): 3423
-  [Cloudini-LZ4]  ratio: 0.16 time (usec): 2210
-  [Cloudini-ZSTD] ratio: 0.14 time (usec): 2758
-```
+![compression_time.png](compression_time.png)
 
 If you are a ROS user, you can test the compression ratio and speed yourself,
 running the application `rosbag_benchmark` on any rosbag containing a `sensor_msgs::msg::PointCloud2` topic.
@@ -80,14 +73,10 @@ The encoder applies a quantization using a resolution provided by the user.
 Typical LiDARs have an accuracy/noise in the order of +/- 1 cm.
 Therefore, using a resolution of **1 mm** (+/- 0.5 mm max quantization error) is usually a very conservative option.
 
-It should also be noted that this two-step compression strategy has a
-negative overhead, i.e. it is actually **faster** than using LZ4 or ZSTD alone.
-
-
 # Compile instructions
 
 Some dependencies are downloaded automatically using [CPM](https://github.com/cpm-cmake/CPM.cmake).
-To avoid downloading them again when your rebuild your project, I suggest setting **CPM_SOURCE_CACHE** as described [here](https://github.com/cpm-cmake/CPM.cmake).
+To avoid downloading them again when you rebuild your project, I suggest setting **CPM_SOURCE_CACHE** as described [here](https://github.com/cpm-cmake/CPM.cmake).
 
 To build the main library (`cloudini_lib`)
 
@@ -160,8 +149,8 @@ Considering that LiDARs accuracy is usually in the order of **+/- 1 cm** and tha
 The latter could achieve excellent compression ratios, but it is very sloooow and it doesn't preserve the original order
 of the points in the point cloud.
 
-Compared with the Draco sequential mode, Cloudini achieves approximately the same compression, but is considerably faster in
-my (currently limited) benchmark.
+Compared with the Draco sequential mode, Cloudini achieves approximately the same compression, but is considerably faster
+(about 3-4 times faster encoding).
 
 ### Does the decoder need to know the parameters used while encoding?
 

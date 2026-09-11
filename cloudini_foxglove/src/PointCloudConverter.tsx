@@ -1,13 +1,13 @@
 import { CompressedPointCloud, PointCloud } from "./Schemas";
-import CloudiniModule from "./cloudini_wasm.js";
-import type { CloudiniWasmModule } from "./cloudini_wasm";
+import CloudiniModule from "./cloudini_wasm_single.js";
+import type { CloudiniWasmModule } from "./cloudini_wasm_single";
 
 let wasmModule: CloudiniWasmModule | null = null;
 let wasmLoadingPromise: Promise<void> | null = null;
 
 export const loadCloudiniWasm = async () => {
   if (!wasmLoadingPromise) {
-    wasmLoadingPromise = CloudiniModule().then((module) => {
+    wasmLoadingPromise = CloudiniModule().then((module: CloudiniWasmModule) => {
       wasmModule = module;
     });
   }
@@ -33,7 +33,7 @@ export const convertPointCloudWasm = (cloud: CompressedPointCloud): PointCloud =
     point_step: cloud.point_step,
     row_step: cloud.point_step * cloud.width,
     is_dense: cloud.is_dense,
-    data: new Uint8Array(),
+    data: new Uint8Array(0),
   };
 
   // Nothing to do, the point cloud is empty
@@ -49,7 +49,6 @@ export const convertPointCloudWasm = (cloud: CompressedPointCloud): PointCloud =
   try {
 
     const bufferSize = data.byteLength;
-    console.info("Decompressing point cloud buffer of size:", bufferSize);
 
     // Check if data is too large for WASM memory
     if (wasmModule.HEAPU8) {
@@ -88,7 +87,7 @@ export const convertPointCloudWasm = (cloud: CompressedPointCloud): PointCloud =
     const decodedData = new Uint8Array(wasmModule.HEAPU8.buffer, outputDataPtr, actualSize);
     // Create a copy to ensure data persists after memory is freed
     decodedMsg.data = new Uint8Array(decodedData);
-  } catch(error) {
+  } catch (error) {
     console.error('Cloudini decompression failed:', error);
     // Preserve original frame_id and add error as a comment
     const errorMessage = error instanceof Error ? error.message : String(error);

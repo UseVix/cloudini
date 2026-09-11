@@ -1,3 +1,15 @@
+// Copyright (c) 2025 Davide Faconti
+//
+// This file is part of Cloudini.
+//
+// Licensed under the FSL-1.1-MIT License.
+// You may obtain a copy of the License at
+// https://fsl.software/
+//
+// Two years from the release date of this software, you may use
+// this file in accordance with the MIT License, as described in
+// the LICENSE file in the root of this repository.
+
 #include <benchmark/benchmark.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/point_cloud.h>
@@ -50,7 +62,7 @@ static void PCD_Encode_Impl(
     encoder.encode(cloud_data, output);
   }
   const auto percentage = 100 * (static_cast<double>(output.size()) / static_cast<double>(cloud_data.size()));
-  std::cout << "Encoded size: " << output.size() << "  percentage: " << percentage << "%" << std::endl;
+  state.counters["Encoded ratio"] = percentage;
 }
 
 static void PCD_Decode_Impl(
@@ -96,7 +108,7 @@ static void PCD_Decode_Lossy_ZST(benchmark::State& state) {
 static void PCD_Encode_Lossles_ZST(benchmark::State& state) {
   const auto cloud = loadCloud();
   auto info = defaultEncodingInfo(cloud);
-  info.encoding_opt = Cloudini::EncodingOptions::LOSSLES;
+  info.encoding_opt = Cloudini::EncodingOptions::LOSSLESS;
   info.compression_opt = Cloudini::CompressionOption::ZSTD;
   PCD_Encode_Impl(state, cloud, info);
 }
@@ -104,8 +116,46 @@ static void PCD_Encode_Lossles_ZST(benchmark::State& state) {
 static void PCD_Encode_Lossles_LZ4(benchmark::State& state) {
   const auto cloud = loadCloud();
   auto info = defaultEncodingInfo(cloud);
-  info.encoding_opt = Cloudini::EncodingOptions::LOSSLES;
+  info.encoding_opt = Cloudini::EncodingOptions::LOSSLESS;
   info.compression_opt = Cloudini::CompressionOption::LZ4;
+  PCD_Encode_Impl(state, cloud, info);
+}
+
+static void PCD_Decode_Lossles_ZST(benchmark::State& state) {
+  const auto cloud = loadCloud();
+  auto info = defaultEncodingInfo(cloud);
+  info.encoding_opt = Cloudini::EncodingOptions::LOSSLESS;
+  info.compression_opt = Cloudini::CompressionOption::ZSTD;
+  PCD_Decode_Impl(state, cloud, info);
+}
+
+static void PCD_Decode_Lossles_LZ4(benchmark::State& state) {
+  const auto cloud = loadCloud();
+  auto info = defaultEncodingInfo(cloud);
+  info.encoding_opt = Cloudini::EncodingOptions::LOSSLESS;
+  info.compression_opt = Cloudini::CompressionOption::LZ4;
+  PCD_Decode_Impl(state, cloud, info);
+}
+
+// v3 XOR baseline: force info.version = 3 so the encoder picks FieldEncoderFloat_XOR
+// (raw 4 bytes per float) instead of the v4 Gorilla bit-packed variant. Not a full
+// round-trip (the header's magic still advertises v4), just a stage-1+2 compression
+// measurement for comparison.
+static void PCD_Encode_LosslesXOR_v3_ZST(benchmark::State& state) {
+  const auto cloud = loadCloud();
+  auto info = defaultEncodingInfo(cloud);
+  info.encoding_opt = Cloudini::EncodingOptions::LOSSLESS;
+  info.compression_opt = Cloudini::CompressionOption::ZSTD;
+  info.version = 3;
+  PCD_Encode_Impl(state, cloud, info);
+}
+
+static void PCD_Encode_LosslesXOR_v3_LZ4(benchmark::State& state) {
+  const auto cloud = loadCloud();
+  auto info = defaultEncodingInfo(cloud);
+  info.encoding_opt = Cloudini::EncodingOptions::LOSSLESS;
+  info.compression_opt = Cloudini::CompressionOption::LZ4;
+  info.version = 3;
   PCD_Encode_Impl(state, cloud, info);
 }
 
@@ -161,11 +211,11 @@ static void PCD_Decode_LZ4_only(benchmark::State& state) {
 }
 
 //------------------------------------------------------------------------------------------
-
 #ifdef DRACO_FOUND
 
 static void PCD_Encode_Draco(benchmark::State& state) {
   const auto cloud = loadCloud();
+  auto encoding_info = defaultEncodingInfo(cloud);
   // Create Draco point cloud
   draco::PointCloudBuilder builder;
   builder.Start(cloud.size());
@@ -173,12 +223,11 @@ static void PCD_Encode_Draco(benchmark::State& state) {
   const int pos_att_id = builder.AddAttribute(draco::GeometryAttribute::POSITION, 3, draco::DT_FLOAT32);
   const int intensity_att_id = builder.AddAttribute(draco::GeometryAttribute::GENERIC, 1, draco::DT_FLOAT32);
 
-  // Add points to the point cloud
-  for (draco::PointIndex i(0); i < cloud.size(); ++i) {
-    const auto& point = cloud.points[i.value()];
-    builder.SetAttributeValueForPoint(pos_att_id, i, &point.x);
-    builder.SetAttributeValueForPoint(intensity_att_id, i, &point.intensity);
-  }
+  const auto stride = encoding_info.point_step;
+  const auto* points_data = cloud.points.data();
+
+  builder.SetAttributeValuesForAllPoints(pos_att_id, points_data, stride);
+  builder.SetAttributeValuesForAllPoints(intensity_att_id, points_data + encoding_info.fields.at(3).offset, stride);
 
   std::unique_ptr<draco::PointCloud> draco_pc = builder.Finalize(false);
   if (!draco_pc) {
@@ -199,7 +248,7 @@ static void PCD_Encode_Draco(benchmark::State& state) {
   }
   const auto percentage =
       100 * (static_cast<double>(buffer.size()) / static_cast<double>(cloud.size() * sizeof(pcl::PointXYZI)));
-  std::cout << "Encoded size: " << buffer.size() << "  percentage: " << percentage << "%" << std::endl;
+  state.counters["Encoded ratio"] = percentage;
 }
 
 #endif
@@ -207,8 +256,12 @@ static void PCD_Encode_Draco(benchmark::State& state) {
 //------------------------------------------------------------------------------------------
 
 BENCHMARK(PCD_Encode_Lossy_ZST);
-BENCHMARK(PCD_Encode_ZSTD_only);
 BENCHMARK(PCD_Encode_Lossy_LZ4);
+BENCHMARK(PCD_Encode_Lossles_ZST);
+BENCHMARK(PCD_Encode_Lossles_LZ4);
+BENCHMARK(PCD_Encode_LosslesXOR_v3_ZST);
+BENCHMARK(PCD_Encode_LosslesXOR_v3_LZ4);
+BENCHMARK(PCD_Encode_ZSTD_only);
 BENCHMARK(PCD_Encode_LZ4_only);
 
 #ifdef DRACO_FOUND
@@ -217,6 +270,8 @@ BENCHMARK(PCD_Encode_Draco);
 
 BENCHMARK(PCD_Decode_Lossy_ZST);
 BENCHMARK(PCD_Decode_Lossy_LZ4);
+BENCHMARK(PCD_Decode_Lossles_ZST);
+BENCHMARK(PCD_Decode_Lossles_LZ4);
 BENCHMARK(PCD_Decode_ZSTD_only);
 BENCHMARK(PCD_Decode_LZ4_only);
 

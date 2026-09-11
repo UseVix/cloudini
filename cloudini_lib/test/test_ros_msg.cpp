@@ -1,3 +1,19 @@
+/*
+ * Copyright 2025 Davide Faconti
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include <gtest/gtest.h>
 
 #include <fstream>
@@ -106,14 +122,14 @@ TEST(Cloudini, DDS_Roundtrip) {
       .point_step = 26,
       .encoding_opt = EncodingOptions::LOSSY,
       .compression_opt = CompressionOption::ZSTD,
-  };
+      .version = kEncodingVersion};
 
   //-----------------------------------------------------------------------------
   // read the DDS message
-  const auto info_dds_message = readPointCloud2Message(dds_pointcloud_msg);
-  EncodingInfo encoding_info = toEncodingInfo(info_dds_message);
+  const auto pc_info = cloudini_ros::getDeserializedPointCloudMessage(dds_pointcloud_msg);
+  EncodingInfo encoding_info = cloudini_ros::toEncodingInfo(pc_info);
 
-  CompareInfos(info_dds_message, expected_infos);
+  CompareInfos(pc_info, expected_infos);
   CompareInfos(encoding_info, expected_infos);
 
   encoding_info.fields[0].resolution = resolution;  // Set resolution for x
@@ -122,8 +138,19 @@ TEST(Cloudini, DDS_Roundtrip) {
   encoding_info.fields[3].resolution = resolution;  // Set resolution for intensity
 
   //-----------------------------------------------------------------------------
-  const std::vector<uint8_t> original_data(
-      info_dds_message.data.data(), info_dds_message.data.data() + info_dds_message.data.size());
+  const std::vector<uint8_t> original_data(pc_info.data.data(), pc_info.data.data() + pc_info.data.size());
 
   VerifyRoundTrip(encoding_info, original_data, resolution);
+}
+
+TEST(Cloudini, RosPointCloud2CopyRebindsOwnedDataView) {
+  cloudini_ros::RosPointCloud2 original;
+  original.owned_data = {1, 2, 3, 4};
+  original.data = ConstBufferView(original.owned_data.data(), original.owned_data.size());
+
+  const cloudini_ros::RosPointCloud2 copied = original;
+
+  ASSERT_EQ(copied.owned_data, original.owned_data);
+  EXPECT_EQ(copied.data.data(), copied.owned_data.data());
+  EXPECT_EQ(copied.data.size(), copied.owned_data.size());
 }

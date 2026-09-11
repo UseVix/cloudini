@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "devDependencies": {
-    "vite": "^6.3.5"
+    "vite": "^8.0.14"
   },
   "dependencies": {
     "@mcap/browser": "^1.0.1",

@@ -13,3 +13,10 @@
 /build*
 /cloudini_web/node_modules
 /cloudini_foxglove/src/cloudini_wasm.js
+/cloudini_foxglove/release/cloudini.foxglove-cloudini-converter-0.1.0.foxe
+/.vscode/launch.json
+/cloudini_py/venv/*
+/cloudini_py/__pycache__/*
+/cloudini_foxglove/src/cloudini_wasm_single.js
+/cloudini_foxglove/release/cloudini.foxglove-cloudini-converter-*.foxe
+/.claude/worktrees/
